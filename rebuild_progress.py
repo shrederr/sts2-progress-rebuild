@@ -705,7 +705,7 @@ def compute_epochs(runs, user_ids, char_stats):
             result.append({
                 "id": eid,
                 "obtain_date": t,
-                "state": "obtained_no_slot",
+                "state": "revealed",
             })
         else:
             result.append({
@@ -834,7 +834,7 @@ def print_summary(progress):
     print()
 
     print("  Epochs:")
-    obtained = sum(1 for e in progress["epochs"] if e["state"] == "obtained_no_slot")
+    obtained = sum(1 for e in progress["epochs"] if e["state"] == "revealed")
     not_obtained = sum(1 for e in progress["epochs"] if e["state"] == "not_obtained")
     print(f"    {obtained} obtained, {not_obtained} not obtained")
 
