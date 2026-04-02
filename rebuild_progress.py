@@ -428,18 +428,107 @@ def compute_discovered(runs):
     }
 
 
+def compute_encounter_and_enemy_stats(runs, user_ids):
+    """
+    Compute encounter_stats and enemy_stats from run history.
+
+    encounter_stats structure (per encounter):
+      {"encounter_id": "ENCOUNTER.X", "fight_stats": [{"character": "CHARACTER.Y", "wins": N, "losses": M}]}
+
+    enemy_stats structure (per monster):
+      {"enemy_id": "MONSTER.X", "fight_stats": [{"character": "CHARACTER.Y", "wins": N, "losses": M}]}
+
+    The game uses encounter_stats to check epoch conditions:
+      - CHAR5: 15 elite wins per character
+      - CHAR6: 15 boss wins per character
+    """
+    # encounter_id -> character -> {wins, losses}
+    enc_data = defaultdict(lambda: defaultdict(lambda: {"wins": 0, "losses": 0}))
+    # enemy_id -> character -> {wins, losses}
+    enemy_data = defaultdict(lambda: defaultdict(lambda: {"wins": 0, "losses": 0}))
+
+    for run in runs:
+        win = run.get("win", False)
+        abandoned = run.get("was_abandoned", False)
+        killed_by = run.get("killed_by_encounter", "NONE.NONE")
+
+        user_chars = [p["character"] for p in run.get("players", []) if p["id"] in user_ids]
+        if not user_chars:
+            continue
+
+        for act_floors in run.get("map_point_history", []):
+            for mp in act_floors:
+                for room in mp.get("rooms", []):
+                    rt = room.get("room_type", "")
+                    model_id = room.get("model_id", "")
+                    monster_ids = room.get("monster_ids", [])
+
+                    if rt not in ("monster", "elite", "boss"):
+                        continue
+
+                    # Determine if this encounter was won or lost
+                    encounter_won = (model_id != killed_by) or win
+
+                    for ch in user_chars:
+                        if encounter_won:
+                            enc_data[model_id][ch]["wins"] += 1
+                        else:
+                            enc_data[model_id][ch]["losses"] += 1
+
+                        # Per-monster stats
+                        for mid in monster_ids:
+                            if encounter_won:
+                                enemy_data[mid][ch]["wins"] += 1
+                            else:
+                                enemy_data[mid][ch]["losses"] += 1
+
+    # Format encounter_stats
+    encounter_stats = []
+    for enc_id in sorted(enc_data.keys()):
+        fight_stats = []
+        for ch in sorted(enc_data[enc_id].keys()):
+            d = enc_data[enc_id][ch]
+            fight_stats.append({
+                "character": ch,
+                "wins": d["wins"],
+                "losses": d["losses"],
+            })
+        encounter_stats.append({
+            "encounter_id": enc_id,
+            "fight_stats": fight_stats,
+        })
+
+    # Format enemy_stats
+    enemy_stats = []
+    for enemy_id in sorted(enemy_data.keys()):
+        fight_stats = []
+        for ch in sorted(enemy_data[enemy_id].keys()):
+            d = enemy_data[enemy_id][ch]
+            fight_stats.append({
+                "character": ch,
+                "wins": d["wins"],
+                "losses": d["losses"],
+            })
+        enemy_stats.append({
+            "enemy_id": enemy_id,
+            "fight_stats": fight_stats,
+        })
+
+    return encounter_stats, enemy_stats
+
+
 def compute_epochs(runs, user_ids, char_stats):
     """
     Determine epoch unlock states based on ACTUAL game logic (decompiled from sts2.dll).
 
-    Character epochs:
+    Character epochs (decompiled from sts2.dll ProgressSaveManager):
       CHAR1 = play a run as that character (non-Ironclad only)
-      CHAR2 = complete Act 1 with that character
-      CHAR3 = complete Act 2 with that character
-      CHAR4 = complete Act 3 with that character
-      CHAR5 = win Ascension 1 with that character
-      CHAR6 = defeat 15 elites total with that character
-      CHAR7 = defeat 15 bosses total with that character
+      CHAR2 = defeat Act 1 boss with that character
+      CHAR3 = defeat Act 2 boss with that character
+      CHAR4 = defeat Act 3 boss with that character
+      CHAR5 = defeat 15 elites total with that character (from EncounterStats)
+      CHAR6 = defeat 15 bosses total with that character (from EncounterStats)
+      CHAR7 = win at Ascension 1 with that character (ascension == 1)
 
     Special epochs:
       NEOW = complete any run
@@ -585,16 +674,16 @@ def compute_epochs(runs, user_ids, char_stats):
         if cd["max_act_completed"] >= 3:
             epoch_map[f"{prefix}4_EPOCH"] = t
 
-        # CHAR5: won Ascension 1 with this character
-        if char_id in char_won_asc1:
+        # CHAR5: 15+ elites defeated with this character (from EncounterStats)
+        if cd["elite_kills"] >= 15:
             epoch_map[f"{prefix}5_EPOCH"] = t
 
-        # CHAR6: 15+ elites defeated with this character
-        if cd["elite_kills"] >= 15:
+        # CHAR6: 15+ bosses defeated with this character (from EncounterStats)
+        if cd["boss_kills"] >= 15:
             epoch_map[f"{prefix}6_EPOCH"] = t
 
-        # CHAR7: 15+ bosses defeated with this character
-        if cd["boss_kills"] >= 15:
+        # CHAR7: won at Ascension 1 with this character (ascension == 1)
+        if char_id in char_won_asc1:
             epoch_map[f"{prefix}7_EPOCH"] = t
 
     # --- Special epochs ---
@@ -764,6 +853,7 @@ def build_progress(runs, user_ids, save_dir):
     ancient_stats = compute_ancient_stats(runs, user_ids)
     card_stats = compute_card_stats(runs, user_ids)
     discovered = compute_discovered(runs)
+    encounter_stats, enemy_stats = compute_encounter_and_enemy_stats(runs, user_ids)
     epochs, agnostic_unlocks = compute_epochs(runs, user_ids, char_stats)
     floors = compute_floors_climbed(runs)
     total_playtime = compute_total_playtime(runs)
@@ -785,8 +875,8 @@ def build_progress(runs, user_ids, save_dir):
         "discovered_potions": discovered["potions"],
         "discovered_relics": discovered["relics"],
         "enable_ftues": False,  # User has played 100+ runs, no need for tutorials
-        "encounter_stats": [],
-        "enemy_stats": [],
+        "encounter_stats": encounter_stats,
+        "enemy_stats": enemy_stats,
         "epochs": epochs,
         "floors_climbed": floors,
         "ftue_completed": [
