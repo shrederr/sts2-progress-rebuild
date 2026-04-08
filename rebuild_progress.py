@@ -106,13 +106,20 @@ ALL_CHARACTERS = [
 def load_runs(history_dir):
     """Load all .run files from the history directory."""
     runs = []
+    skipped = 0
     for fn in sorted(history_dir.iterdir()):
         if fn.suffix == ".run":
-            with open(fn, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            runs.append(data)
+            try:
+                with open(fn, "r", encoding="utf-8-sig") as f:
+                    data = json.load(f)
+                runs.append(data)
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                skipped += 1
+                print(f"  [WARN] Skipping corrupted file: {fn.name} ({e})")
     runs.sort(key=lambda x: x["start_time"])
     print(f"Loaded {len(runs)} runs from {history_dir}")
+    if skipped:
+        print(f"  Skipped {skipped} corrupted file(s)")
     return runs
 
 
